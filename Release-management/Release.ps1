@@ -1,17 +1,45 @@
 ﻿# Powershell release script for bumping package.json and bower.json
-# Building a web project (simple) task. 
-# Then pushing the correct tags to git. 
+# Builds a web project (simple) task using npm, bower and gulp . 
+# Pushes the correct tags to git.
+# Then assembles a package and uploads the web-package to artifactory with the right version
 # Harald S. Fianbakken <harald.fianbakken@gmail.com>
+
 param(
     [Parameter(Mandatory=$true,ParameterSetname='default')]
     [ValidateSet("major","minor","patch")]
      $releaseType,
+    [Parameter(Mandatory=$true,ParameterSetname='default')]
+     $workingDirectory,
      [Parameter(ParameterSetname='default')]
      [switch]$dry,
+     [Parameter(ParameterSetname='default')]
+     [switch]$skipBuild,
      [Parameter(ParameterSetname='help')]
      [switch]$help);
 Set-StrictMode -Version latest
+
 $scriptFile=$MyInvocation.MyCommand.Name;
+$artifactoryBowerUri = "https://foo-bar.com/bower";
+$deploymentCredentials = @{
+        "Username"="__INSERT_USERNAME_ARTIFACTORY__";
+        "Password" = "__INSERT_PASSWORD_HERE";
+};
+
+# This will make Write-tar mess up the path if your username has an alias in it (e.g. domain~1user1)
+$tempFolder = Join-path $env:TEMP "bower-release";
+# If you have issues with write-tar (packaging your web-app), use this instead 
+# $tempFolder = Join-path "C:\temp\" "bower-release";
+
+if($workingDirectory){
+    Write-Verbose "Working folder $workingDirectory";
+    ïf(Test-Path $workingDirectory){
+        Push-Location $workingDirectory;
+    } else {
+        Write-Error "$workingDirectory does not exist";
+        throw "$workingDirectory does not exist!";
+    }
+}
+Write-verbose "Assemblying folder $tempFolder";
 
 function Bump-Version($file, $releaseType, [switch]$dry){
     if(-not (Test-Path $file)){
@@ -26,7 +54,7 @@ function Bump-Version($file, $releaseType, [switch]$dry){
         $versions += 0;    
     }
     switch ($releaseType) {
-        "major" {
+       "major" {
             $versions[0]=[int]::Parse($versions[0])+1;
             $versions[1] = 0;
             $versions[2] = 0;
@@ -52,7 +80,7 @@ function Bump-Version($file, $releaseType, [switch]$dry){
         $fileJson|ConvertTo-Json|Set-Content -Path $file;    
     }
     
-    return $fileJson.version;
+    return $fileJson;
 }
 
 
@@ -75,11 +103,125 @@ if($help -and $help.IsPresent){
     exit 0;
 }
 
-function Build-WebProject (){    
+function Clean-WebProject(){    
+    Clean-BowerAndNodeModules;
+
+    if((Get-Command rimraf)){
+        Write-Verbose "Cleaning WebProject Dist folder";
+        rimraf .\dist                 
+    } else {
+        Write-Verbose "Cleaning WebProject Dist folder";
+        Remove-Item -Force .\dist -Recurse
+        Write-Verbose "Cleaning bower components";
+        Remove-Item -Force .\bower_components -Recurse
+        Write-Verbose "Cleaning node modules";
+        Remove-Item -Force .\node_modules -Recurse
+    }
+}
+
+function Clean-BowerAndNodeModules(){
+   if((Get-Command rimraf)){        
+        Write-Verbose "Cleaning bower components";
+        rimraf .\bower_components 
+        Write-Verbose "Cleaning node modules";
+        rimraf .\node_modules 
+    } else {        
+        Write-Verbose "Cleaning bower components";
+        rm -Force .\bower_components -Recurse
+        Write-Verbose "Cleaning node modules";
+        rm -Force .\node_modules -Recurse
+    }
+}
+
+function Build-WebProject([Parameter(Mandatory=$true)]$projectName, [Parameter(Mandatory=$true)]$version){    
+ 
+    
+    Clean-WebProject;
     Write-Verbose "Building web project";
-    Invoke-safe -cmd "npm install"
-    Invoke-safe -cmd "bower install"
-    Invoke-safe -cmd "gulp"
+    Invoke-safe -cmd "npm install" | Out-Null
+    Invoke-safe -cmd "bower install" | Out-Null
+    Invoke-safe -cmd "gulp" | Out-Null
+    
+    # Clean if existing
+    if(Test-Path $tempFolder){
+        Remove-Item $tempFolder -Force -Recurse | Out-Null;
+        New-Item -ItemType Directory -Path $tempFolder -Force|Out-Null ;
+    } else {
+       New-Item -ItemType Directory -Path $tempFolder -Force |Out-Null;
+    }
+    
+    Copy-item * $tempFolder -Exclude @("bower_Components", "node_modules", ".git", ".idea") -Force -Recurse|Out-Null ;
+    
+    if($?){
+        Write-Verbose "Packaging webproject for deployment";        
+        $destination = (Join-Path "dist" "$($projectname)-v$($version).tar");
+        $destinationZip = "$($destination).gz";
+        if(-not (Test-Path (Split-Path $destination))){
+            New-Item -ItemType Directory -Force (Split-Path $destination) | Out-Null;
+        }
+
+        $Source = $tempFolder;
+        Write-Verbose "Creating zip from $source to $destination";        
+        
+        if(Test-Path $destination){
+            Write-Verbose "Removing file $destination";
+            Remove-Item -Force $destination;
+        }
+
+        if((Get-Command Write-zip)){            
+            Write-Verbose "Using PSCX Zip method!";
+            Get-ChildItem -Recurse -Path $tempfolder -Exclude @(".git", ".idea")| write-tar -outputpath $destination -EntryPathRoot $tempFolder| write-gzip -level 9;
+            $item = move-item $destination $destinationZip -PassThru;      
+            if($?){
+                return $item;
+            }      
+        } elseif((Get-Command Compress-Archive)){
+            Write-verbose "Using PowerShell5 zip method";
+            Compress-Archive -Path $Source -CompressionLevel NoCompression -DestinationPath $destination;
+
+            Write-Warning -Message "This file cannot be used with bower unless it has support for standard zip compression";
+            Write-Warning "You might want to consider packing your $Source manually then running Deploy"; 
+            if($?){
+                $item = Move-Item $destination $destinationZip -PassThru;
+                return $item; 
+            } else {
+                Write-Error "Unable to create ZIP $destination";
+                throw "Unable to create ZIP $destination";
+            }            
+        } 
+        else {
+            Write-Error "Unable to find compression method - Consider installing pscx? Install-module PSCX";
+            throw "Cannot create zip/tar.gz of $Source";
+        }
+        
+
+    } else {
+        Write-Error "Build failed with $LASTEXITCODE";
+        throw "Build failed";
+    }
+}
+
+function Deploy-BowerPackage-To-Artifactory(
+[Parameter(Mandatory=$true)]$deploycredentials,
+[Parameter(Mandatory=$true)]$package,
+[Parameter(Mandatory=$true)]$artifactname,
+[Parameter(Mandatory=$true)]$file
+){    
+    $url = "$($artifactoryBowerUri)/$($package)/$($artifactname)"
+    $cred = [pscredential]::new($deploycredentials.Username, ($deploycredentials.Password | ConvertTo-SecureString -AsPlainText -Force));
+    Write-Verbose "Deploying $package with artifactname $artifactname - using file $file to $url";
+    Invoke-WebRequest -Credential $cred -Method PUT -Uri $url -InFile $file.Fullname -ContentType "multipart/form-data";
+}
+
+function Remove-BowerPackage-From-Artifactory(
+[Parameter(Mandatory=$true)]$deploycredentials,
+[Parameter(Mandatory=$true)]$package,
+[Parameter(Mandatory=$true)]$artifactname
+){    
+    $url = "$($artifactoryBowerUri)/$($package)/$($artifactname)"
+    $cred = [pscredential]::new($deploycredentials.Username, ($deploycredentials.Password | ConvertTo-SecureString -AsPlainText -Force));
+    Write-Verbose "Removing $package with artifactname $artifactname - Using url $url";
+    Invoke-WebRequest -Credential $cred -Method DELETE -Uri $url;
 }
 
 function Commit-Changes($version,[switch]$dry){
@@ -92,15 +234,40 @@ function Commit-Changes($version,[switch]$dry){
     if($dry -and $dry.IsPresent){
         Write-debug  "Script finished; dry run complete!";
     } else {
-        Write-debug "Script updating and releasing $version"
-        Invoke-safe -cmd "git tag -a v$version -m '$version'"
-        Invoke-safe -cmd "git push"
-        Invoke-safe -cmd "git push --tags"
+        Write-debug "Script updating and releasing $version";
+        Invoke-safe -cmd "git tag -a v$version -m '$version'";
+        Invoke-safe -cmd "git push";
+        Invoke-safe -cmd "git push --tags";
     }
 }
 
-$packageVersion = Bump-Version -file ".\package.json" -releaseType $releaseType -dry $dry;
-$bowerVersion = Bump-Version -file ".\bower.json" -releaseType $releaseType -dry $dry;
-Build-WebProject;
+if($dry -and $dry.IsPresent){
+    $package = Bump-Version -file ".\package.json" -releaseType $releaseType -dry $dry;
+    $bower = Bump-Version -file ".\bower.json" -releaseType $releaseType -dry $dry;
+} else {
+    $package = Bump-Version -file ".\package.json" -releaseType $releaseType;
+    $bower = Bump-Version -file ".\bower.json" -releaseType $releaseType;
+}
 
-Commit-Changes -version $bowerVersion -dry $dry;
+if($dry -and $dry.IsPresent){
+    Write-Verbose "Running with -dry, skipping build";
+} elseif($skipBuild -and $skipBuild.IsPresent){
+   Write-Verbose "Skipping build";
+}
+ else {
+    $deployment = Build-WebProject -projectName $bower.name -version $bower.version;    
+    if($?){
+        $artifactName = $bower.name;        
+        Deploy-BowerPackage-To-Artifactory -deploycredentials $deploymentCredentials -package $bower.name -artifactname $deployment.Name -file $deployment;
+    }
+}
+
+if($dry -and $dry.IsPresent){
+    Commit-Changes -version $bower.version -dry $dry;
+} else {
+    Commit-Changes -version $bower.version;
+}
+
+if($workingDirectory){
+    Pop-Location;
+}
