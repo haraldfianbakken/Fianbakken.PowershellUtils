@@ -171,11 +171,12 @@ function Build-WebProject([Parameter(Mandatory=$true)]$projectName, [Parameter(M
 
         if((Get-Command Write-Tar)){            
             Write-Verbose "Using PSCX Zip method!";
-            Get-ChildItem -Recurse -Path $tempfolder -Exclude @(".git", ".idea")| write-tar -outputpath $destination -EntryPathRoot $tempFolder|write-gzip -OutputPath $destinationZip -EntryPathRoot "dist\" -Level 9 |out-null;            
+            Get-ChildItem -Recurse -Path $tempfolder -Exclude @(".git", ".idea")| write-tar -outputpath $destination -EntryPathRoot $tempFolder|out-null;
+            Get-ChildItem $destination|write-gzip -OutputPath $destinationZip -EntryPathRoot "dist\" -Level 9 |out-null;            
             $item = $destinationZip;
             if($?){
-                return (gci $item);
-            }      
+                return (Get-ChildItem $item);
+            }   
         } elseif((Get-Command Compress-Archive)){
             Write-verbose "Using PowerShell5 zip method";
             Compress-Archive -Path $Source -CompressionLevel NoCompression -DestinationPath $destination;
