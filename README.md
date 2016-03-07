@@ -5,5 +5,5 @@ A set of Powershell Utils
  - Work in progress - Set of functions to diff / merge datastructures.
 
 * Release-management
-  - Release-web 
-    Simple script to build web project, bump versions in bower/package.json and create git release tags and commit changes for release. 
+  - Release.sh
+  -- Simple script to build and release a web project (using npm, bower, gulp), bumps versions, packages it ( to tar.gz) - prepares as a bower component, pushing to artifactory and releasing (git tags) to git. 
