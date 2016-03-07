@@ -133,15 +133,16 @@ function Clean-BowerAndNodeModules(){
     }
 }
 
-function Build-WebProject([Parameter(Mandatory=$true)]$projectName, [Parameter(Mandatory=$true)]$version){    
+
+function Build-WebProject([Parameter(Mandatory=$true)]$projectName, [Parameter(Mandatory=$true)]$version,[switch]$packageOnly){    
  
-    
-    Clean-WebProject;
-    Write-Verbose "Building web project";
-    Invoke-safe -cmd "npm install" | Out-Null
-    Invoke-safe -cmd "bower install" | Out-Null
-    Invoke-safe -cmd "gulp" | Out-Null
-    
+    if(-not $packageOnly -or -not $packageOnly.IsPresent){
+        Clean-WebProject;
+        Write-Verbose "Building web project";
+        Invoke-safe -cmd "npm install" | Out-Null
+        Invoke-safe -cmd "bower install" | Out-Null
+        Invoke-safe -cmd "gulp" | Out-Null
+    }
     # Clean if existing
     if(Test-Path $tempFolder){
         Remove-Item $tempFolder -Force -Recurse | Out-Null;
@@ -168,19 +169,20 @@ function Build-WebProject([Parameter(Mandatory=$true)]$projectName, [Parameter(M
             Remove-Item -Force $destination;
         }
 
-        if((Get-Command Write-zip)){            
+        if((Get-Command Write-Tar)){            
             Write-Verbose "Using PSCX Zip method!";
-            Get-ChildItem -Recurse -Path $tempfolder -Exclude @(".git", ".idea")| write-tar -outputpath $destination -EntryPathRoot $tempFolder| write-gzip -level 9;
-            $item = move-item $destination $destinationZip -PassThru;      
+            Get-ChildItem -Recurse -Path $tempfolder -Exclude @(".git", ".idea")| write-tar -outputpath $destination -EntryPathRoot $tempFolder|out-null;
+            Get-ChildItem $destination|Write-Tar -OutputPath $destinationZip -EntryPathRoot "dist\"|write-gzip -level 9|out-null;            
+            $item = $destinationZip;
             if($?){
-                return $item;
+                return (gci $item);
             }      
         } elseif((Get-Command Compress-Archive)){
             Write-verbose "Using PowerShell5 zip method";
             Compress-Archive -Path $Source -CompressionLevel NoCompression -DestinationPath $destination;
 
-            Write-Warning -Message "This file cannot be used with bower unless it has support for standard zip compression";
-            Write-Warning "You might want to consider packing your $Source manually then running Deploy"; 
+            Write-Warning -Message "This file cannot be used with bower unless it has installed support for standard zip compression";
+            Write-Warning "You might want to consider packing your $Source manually then running Deploy (e.g. 7zip)"; 
             if($?){
                 $item = Move-Item $destination $destinationZip -PassThru;
                 return $item; 
